@@ -9,30 +9,27 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Install dependencies
+    - name: Install dependencies and cross-compiler
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential flex bison libelf-dev libssl-dev bc
+        sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
         
     - name: Setup ARM64 kernel source
       run: |
         wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.19.157.tar.xz
         tar xf linux-4.19.157.tar.xz
         cp .config linux-4.19.157/.config
-        # 强制设置为ARM64架构
-        echo "CONFIG_ARM64=y" >> linux-4.19.157/.config
-        echo "CONFIG_64BIT=y" >> linux-4.19.157/.config
         
     - name: Build hosts_redirect module
       run: |
         cd linux-4.19.157
-        # 跳过不必要的架构检查
-        sed -i 's/CONFIG_UNWINDER_ORC=y/# CONFIG_UNWINDER_ORC is not set/' .config
-        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+        # 使用简化配置，避免复杂的内核编译
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
         cd ../hosts_redirect
-        # 修改Makefile调用方式
-        KERNEL_SRC=../linux-4.19.157 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- make
+        # 使用作者原有的Makefile，但指定架构
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- KERNEL_SRC=../linux-4.19.157
         
     - name: Upload artifact
       uses: actions/upload-artifact@v4
