@@ -1,4 +1,4 @@
-name: Build for Xiaomi 4.19.157
+name: Build hosts_redirect - FIXED
 
 on:
   workflow_dispatch:
@@ -7,32 +7,22 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install dependencies and cross-compiler
+    - name: Checkout Code AND Submodules
+      uses: actions/checkout@v4
+      with:
+        # 核心修复：递归拉取所有子模块，确保KernelPatch到位
+        submodules: recursive
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build the Module
       run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential flex bison libelf-dev libssl-dev bc
-        sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-        
-    - name: Setup ARM64 kernel source
-      run: |
-        wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.19.157.tar.xz
-        tar xf linux-4.19.157.tar.xz
-        cp .config linux-4.19.157/.config
-        
-    - name: Build hosts_redirect module
-      run: |
-        cd linux-4.19.157
-        # 使用简化配置，避免复杂的内核编译
-        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
-        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
-        cd ../hosts_redirect
-        # 使用作者原有的Makefile，但指定架构
-        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- KERNEL_SRC=../linux-4.19.157
-        
-    - name: Upload artifact
+        # 进入模块目录，使用作者预设的Makefile直接编译
+        cd hosts_redirect
+        make
+
+    - name: Upload Compiled Module
       uses: actions/upload-artifact@v4
       with:
-        name: xiaomi-hosts-redirect
+        name: hosts_redirect-module
         path: hosts_redirect/*.kpm
+        retention-days: 1
