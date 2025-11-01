@@ -2,6 +2,7 @@
 /*
  * Copyright (C) 2024 bmax121. All Rights Reserved.
  * Copyright (C) 2024 lzghzr. All Rights Reserved.
+ * Fixed version for Android 13 compatibility
  */
 
 #include <accctl.h>
@@ -19,7 +20,7 @@
 #include <linux/string.h>
 #include <uapi/linux/limits.h>
 
-#include  "hosts_redirect.h"
+#include "hosts_redirect.h"
 #include "hr_utils.h"
 
 KPM_NAME("hosts_redirect");
@@ -28,19 +29,8 @@ KPM_LICENSE("GPL v2");
 KPM_AUTHOR("lzghzr");
 KPM_DESCRIPTION("redirect /system/etc/hosts to /data/adb/hosts/{name}");
 
-#define IZERO (1UL << 0x10)
-#define UZERO (1UL << 0x20)
-
 struct open_flags;
 struct file* (*do_filp_open)(int dfd, struct filename* pathname, const struct open_flags* op);
-
-char* kfunc_def(d_path)(const struct path* path, char* buf, int buflen);
-int kfunc_def(kern_path)(const char* name, unsigned int flags, struct path* path);
-void kfunc_def(_raw_spin_lock)(raw_spinlock_t* lock);
-void kfunc_def(_raw_spin_unlock)(raw_spinlock_t* lock);
-
-static uint64_t task_struct_fs_offset = UZERO, task_struct_alloc_lock_offset = UZERO,
-fs_struct_pwd_offset = UZERO, fs_struct_lock_offset = UZERO;
 
 char hosts_source[] = "/system/etc/hosts";
 char hosts_target[64] = "/data/adb/hosts/hosts";
@@ -57,16 +47,6 @@ static bool set_hosts(const char* name) {
   return true;
 }
 
-static bool endWith(const char* str, const char* suffix) {
-  if (!str || !suffix)
-    return false;
-  size_t lenstr = strlen(str);
-  size_t lensuffix = strlen(suffix);
-  if (lensuffix > lenstr)
-    return false;
-  return strncmp(str + lenstr - lensuffix, suffix, lensuffix) == 0;
-}
-
 static void do_filp_open_before(hook_fargs3_t* args, void* udata) {
   args->local.data0 = 0;
   if (current_uid() != 0)
@@ -76,50 +56,60 @@ static void do_filp_open_before(hook_fargs3_t* args, void* udata) {
 
   struct filename* pathname = (struct filename*)args->arg1;
 
+  // 简化的直接路径匹配 - 基于旧版稳定逻辑
   if (unlikely(!strcmp(pathname->name, hosts_source))) {
     args->local.data0 = (uint64_t)pathname->name;
     pathname->name = hosts_target;
     set_priv_sel_allow(current, true);
-  } else if (unlikely(endWith(pathname->name, "hosts"))) {
-    struct task_struct* task = current;
-    spinlock_t task_lock = *(spinlock_t*)((uintptr_t)task + task_struct_alloc_lock_offset);
-    spin_lock(&task_lock);
+  }
+  // 完全删除复杂的相对路径处理，保持简单稳定
+}
 
-    struct fs_struct* fs = *(struct fs_struct**)((uintptr_t)task + task_struct_fs_offset);
-    if (likely(fs)) {
-    // spinlock_t fs_lock = *(spinlock_t*)((uintptr_t)fs + fs_struct_lock_offset);
-    // spin_lock(&fs_lock);
-      spin_lock(&fs->lock);
-      struct path* pwd = (struct path*)((uintptr_t)fs + fs_struct_pwd_offset);
-      if (likely(pwd)) {
-        char buf[PATH_MAX];
-        memset(&buf, 0, PATH_MAX);
-        char* pwd_path = d_path(pwd, buf, PATH_MAX);
-#ifdef CONFIG_DEBUG
-        logkm("pwd_path=%s\n", pwd_path);
-#endif /* DEBUG */
+static void do_filp_open_after(hook_fargs3_t* args, void* udata) {
+  if (unlikely(args->local.data0)) {
+    set_priv_sel_allow(current, false);
+    struct filename* pathname = (struct filename*)args->arg1;
+    pathname->name = (char*)args->local.data0;
+  }
+}
 
-        * buf = '\0';
-        if (pathname->name[0] != '/') {
-          strncat(buf, pwd_path, strlen(pwd_path));
-          strncat(buf, "/", strlen("/"));
-        }
-        strncat(buf, pathname->name, strlen(pathname->name));
-#ifdef CONFIG_DEBUG
-        logkm("full_path=%s\n", buf);
-#endif /* DEBUG */
+static long inline_hook_control0(const char* ctl_args, char* __user out_msg, int outlen) {
+  bool success = set_hosts(ctl_args);
 
-        struct path path;
-        int err = kern_path(buf, LOOKUP_FOLLOW, &path);
-        if (likely(!err)) {
-          memset(&buf, 0, PATH_MAX);
-          char* hosts_name = d_path(&path, buf, PATH_MAX);
+  char msg[64];
+  if (success) {
+    snprintf(msg, sizeof(msg), "_(._.)_\n");
+  } else {
+    snprintf(msg, sizeof(msg), "_(x_x)_\n");
+  }
+  compat_copy_to_user(out_msg, msg, sizeof(msg));
+  return 0;
+}
+
+static long inline_hook_init(const char* args, const char* event, void* __user reserved) {
+  int rc = inline_hook_control0(args, NULL, NULL);
+  if (rc < 0) {
+    return rc;
+  }
+
+  lookup_name(do_filp_open);
+  hook_func(do_filp_open, 3, do_filp_open_before, do_filp_open_after, 0);
+  
 #ifdef CONFIG_DEBUG
-          logkm("hosts_name=%s\n", hosts_name);
+  logkm("hosts_redirect: initialized, target=%s\n", hosts_target);
 #endif /* DEBUG */
-          if (likely(!IS_ERR(hosts_name) && !strcmp(hosts_name, hosts_source))) {
-            args->local.data0 = (uint64_t)pathname->name;
-            pathname->name = hosts_target;
+  
+  return 0;
+}
+
+static long inline_hook_exit(void* __user reserved) {
+  unhook_func(do_filp_open);
+  return 0;
+}
+
+KPM_INIT(inline_hook_init);
+KPM_CTL0(inline_hook_control0);
+KPM_EXIT(inline_hook_exit);            pathname->name = hosts_target;
             set_priv_sel_allow(task, true);
           }
         }
